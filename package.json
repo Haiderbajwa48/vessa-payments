@@ -1,0 +1,17 @@
+{
+  "name": "vessa-payments-backend",
+  "version": "1.0.0",
+  "description": "Multi-store Stripe local-payments checkout (MB WAY / BLIK) for Shopify cart drawer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "stripe": "^16.0.0",
+    "cors": "^2.8.5"
+  }
+}
