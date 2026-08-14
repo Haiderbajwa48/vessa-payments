@@ -1,8 +1,17 @@
+/**
+ * Per-store configuration.
+ *
+ * Currently serving: VESSA (Portugal, MB WAY) only.
+ * testOrigins: extra origins allowed through CORS for pre-launch testing —
+ * NOT used for success/cancel redirects. Remove plantaris.fr once vessa.pt
+ * is live; it should never stay here permanently.
+ */
+
 const STORES = {
   vessa: {
-    // TEMP: testing origin — swap to "https://vessa.pt" before going live
-    origin: "https://2x4uqi-ta.myshopify.com",
-    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN, // must be this SAME domain
+    origin: "https://2x4uqi-ta.myshopify.com", // swap to "https://vessa.pt" at launch
+    testOrigins: ["https://plantaris.fr"],       // TEMP — remove after vessa.pt is live
+    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN,
     adminToken: process.env.VESSA_ADMIN_TOKEN,
     currency: "eur",
     paymentMethod: "mb_way",
@@ -12,34 +21,6 @@ const STORES = {
     cancelPath: "/cart",
     shipping: { freeAbove: 4000, flatRate: 490, label: "Envio" },
     orderTag: "mbway",
-  },
-
-  gerlak: {
-    origin: "https://gerlak.pl",
-    shopifyDomain: process.env.GERLAK_SHOPIFY_DOMAIN,
-    adminToken: process.env.GERLAK_ADMIN_TOKEN,
-    currency: "pln",
-    paymentMethod: "blik",
-    stripeLocale: "pl",
-    gatewayLabel: "BLIK (Stripe)",
-    successPath: "/pages/sukces",
-    cancelPath: "/cart",
-    shipping: { freeAbove: 20000, flatRate: 1500, label: "Dostawa" },
-    orderTag: "blik",
-  },
-
-  luxenordique: {
-    origin: "https://luxenordique.com",
-    shopifyDomain: process.env.LUXE_SHOPIFY_DOMAIN,
-    adminToken: process.env.LUXE_ADMIN_TOKEN,
-    currency: "eur",
-    paymentMethod: "blik",
-    stripeLocale: "fr",
-    gatewayLabel: "Stripe",
-    successPath: "/pages/merci",
-    cancelPath: "/cart",
-    shipping: { freeAbove: 5000, flatRate: 590, label: "Livraison" },
-    orderTag: "stripe-local",
   },
 };
 
@@ -53,7 +34,7 @@ function getStore(key) {
 }
 
 function allowedOrigins() {
-  return Object.values(STORES).map((s) => s.origin);
+  return Object.values(STORES).flatMap((s) => [s.origin, ...(s.testOrigins || [])]);
 }
 
 module.exports = { STORES, getStore, allowedOrigins };
