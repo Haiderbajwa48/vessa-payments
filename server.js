@@ -15,6 +15,7 @@ const express = require("express");
 const cors = require("cors");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { getStore, allowedOrigins } = require("./stores");
+const { getAccessToken } = require("./shopify-auth");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,7 +41,6 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // MB WAY notifies immediately; handle async variants defensively too.
     const relevant =
       (event.type === "checkout.session.completed" &&
         event.data.object.payment_status === "paid") ||
@@ -51,7 +51,6 @@ app.post(
         await createShopifyOrder(event.data.object);
       } catch (err) {
         console.error("Order creation failed:", err.message);
-        // 500 -> Stripe retries the webhook (idempotency guard below)
         return res.status(500).send("Order creation failed");
       }
     }
@@ -94,7 +93,6 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const store = getStore(storeKey);
 
-    // --- Server-side price lookup: NEVER trust client-sent prices -----
     const lineItems = [];
     let subtotal = 0;
 
@@ -122,11 +120,9 @@ app.post("/create-checkout-session", async (req, res) => {
       });
     }
 
-    // --- Shipping --------------------------------------------------
     const shippingAmount =
       subtotal >= store.shipping.freeAbove ? 0 : store.shipping.flatRate;
 
-    // --- Compact cart snapshot for the webhook (metadata limit 500c) --
     const cartCompact = items
       .map((i) => `${i.variant_id}:${Math.max(1, parseInt(i.quantity, 10) || 1)}`)
       .join(",");
@@ -175,11 +171,12 @@ app.post("/create-checkout-session", async (req, res) => {
 /* ------------------------------------------------------------------ */
 
 async function shopifyFetch(store, path, options = {}) {
+  const token = await getAccessToken(store);
   const url = `https://${store.shopifyDomain}/admin/api/${API_VERSION}${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
-      "X-Shopify-Access-Token": store.adminToken,
+      "X-Shopify-Access-Token": token,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
@@ -218,7 +215,7 @@ async function fetchVariant(store, variantId) {
 /* Webhook -> paid Shopify order (idempotent)                          */
 /* ------------------------------------------------------------------ */
 
-const processedSessions = new Set(); // fast in-process guard
+const processedSessions = new Set();
 
 async function createShopifyOrder(session) {
   const storeKey = session.metadata?.store;
@@ -228,10 +225,8 @@ async function createShopifyOrder(session) {
   }
   const store = getStore(storeKey);
 
-  // Idempotency, layer 1: in-memory
   if (processedSessions.has(session.id)) return;
 
-  // Idempotency, layer 2: survive restarts — search existing orders by tag
   const existing = await shopifyFetch(
     store,
     `/orders.json?status=any&fields=id,tags&limit=5&name=&tag=${encodeURIComponent(
@@ -305,5 +300,7 @@ async function createShopifyOrder(session) {
 }
 
 /* ------------------------------------------------------------------ */
+
+app.listen(PORT, () => console.log(`Payments backend listening on :${PORT}`));
 
 app.listen(PORT, () => console.log(`Payments backend listening on :${PORT}`));
