@@ -302,5 +302,3 @@ async function createShopifyOrder(session) {
 /* ------------------------------------------------------------------ */
 
 app.listen(PORT, () => console.log(`Payments backend listening on :${PORT}`));
-
-app.listen(PORT, () => console.log(`Payments backend listening on :${PORT}`));
