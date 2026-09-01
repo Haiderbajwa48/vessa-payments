@@ -2,16 +2,24 @@
  * Per-store configuration.
  *
  * Currently serving: VESSA (Portugal, MB WAY) only.
- * testOrigins: extra origins allowed through CORS for pre-launch testing —
- * NOT used for success/cancel redirects. Remove plantaris.fr once vessa.pt
- * is live and this store is rebranded; it should never stay here permanently.
+ * Domain cutover in progress: plantaris.fr -> vessa.eu (same Shopify store,
+ * same myshopify.com backend domain — only the customer-facing domain changed).
+ *
+ * origin: the canonical URL used for Stripe success/cancel redirects.
+ * testOrigins: every other domain that should still pass CORS during the
+ * cutover window (www variant, apex variant, old domain, myshopify preview).
+ * Trim this list down once vessa.eu is fully settled as primary.
  */
 
 const STORES = {
   vessa: {
-    origin: "https://2x4uqi-ta.myshopify.com", // swap to "https://vessa.pt" at launch
-    testOrigins: ["https://plantaris.fr"],      // TEMP — remove after vessa.pt rebrand
-    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN, // bare domain, e.g. "2x4uqi-ta.myshopify.com"
+    origin: "https://www.vessa.eu", // update if Shopify's primary domain is the apex (no www) instead — check Settings -> Domains
+    testOrigins: [
+      "https://vessa.eu",
+      "https://plantaris.fr",
+      "https://2x4uqi-ta.myshopify.com",
+    ],
+    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN, // unchanged — same store, e.g. "2x4uqi-ta.myshopify.com"
     clientId: process.env.VESSA_CLIENT_ID,
     clientSecret: process.env.VESSA_CLIENT_SECRET,
     currency: "eur",
