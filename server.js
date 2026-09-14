@@ -256,9 +256,24 @@ async function createShopifyOrder(session) {
   const cd = session.customer_details || {};
   const ship = cd.address || {};
 
+  // Stripe charged product + shipping together (amount_total). The order's
+  // line_items only cover the product, so without an explicit shipping_line
+  // Shopify's own computed total falls short of what was actually paid —
+  // it then flags the difference as an owed refund. No tax/discounts are
+  // used in this setup, so amount_total - amount_subtotal is exactly the
+  // shipping charged.
+  const shippingCostCents = Math.max(
+    0,
+    (session.amount_total || 0) - (session.amount_subtotal || 0)
+  );
+
   const orderPayload = {
     order: {
       line_items: lineItems,
+      shipping_lines:
+        shippingCostCents > 0
+          ? [{ title: store.shipping.label, price: (shippingCostCents / 100).toFixed(2) }]
+          : [],
       email: cd.email || undefined,
       phone: cd.phone || undefined,
       financial_status: "paid",
