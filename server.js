@@ -1,14 +1,6 @@
 /**
  * Multi-store Stripe local-payments backend (MB WAY / BLIK)
  * Deploy: Railway. Front-end: Shopify cart drawer button (see /theme).
- *
- * Flow:
- *   1. Theme JS reads /cart.js, POSTs { store, items:[{variant_id, quantity}] }
- *   2. Backend fetches REAL prices from Shopify Admin API (never trusts client)
- *   3. Creates Stripe Checkout Session (payment_method per store config)
- *   4. Customer pays (MB WAY: phone number + approve in app)
- *   5. Stripe webhook -> create PAID order in Shopify, inventory decremented
- *   6. Customer lands on store success page -> Google Ads / GA4 purchase fires
  */
 
 const express = require("express");
@@ -123,12 +115,20 @@ app.post("/create-checkout-session", async (req, res) => {
     const shippingAmount =
       subtotal >= store.shipping.freeAbove ? 0 : store.shipping.flatRate;
 
+    const totalValue = ((subtotal + shippingAmount) / 100).toFixed(2);
+
     const cartCompact = items
       .map((i) => `${i.variant_id}:${Math.max(1, parseInt(i.quantity, 10) || 1)}`)
       .join(",");
     if (cartCompact.length > 480) {
       return res.status(400).json({ error: "Cart too large for one session" });
     }
+
+    const successUrl =
+      `${store.origin}${store.successPath}` +
+      `?session_id={CHECKOUT_SESSION_ID}` +
+      `&value=${encodeURIComponent(totalValue)}` +
+      `&currency=${encodeURIComponent(store.currency.toUpperCase())}`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -151,7 +151,7 @@ app.post("/create-checkout-session", async (req, res) => {
         },
       ],
       phone_number_collection: { enabled: true },
-      success_url: `${store.origin}${store.successPath}?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: successUrl,
       cancel_url: `${store.origin}${store.cancelPath}`,
       metadata: {
         store: storeKey,
@@ -227,15 +227,22 @@ async function createShopifyOrder(session) {
 
   if (processedSessions.has(session.id)) return;
 
+  // Shopify order tags are capped at 40 characters EACH — a raw Stripe
+  // session id (60-70+ chars) blows that limit and Shopify rejects the
+  // whole order with "Order tags is invalid". Use a short, still
+  // effectively-unique slice for the tag; the full session id is kept
+  // in `note` and `note_attributes` below, which have no such limit.
+  const shortSessionTag = "sid-" + session.id.slice(-30);
+
   const existing = await shopifyFetch(
     store,
     `/orders.json?status=any&fields=id,tags&limit=5&name=&tag=${encodeURIComponent(
-      session.id
+      shortSessionTag
     )}`
   ).catch(() => ({ orders: [] }));
   if (
     existing.orders &&
-    existing.orders.some((o) => (o.tags || "").includes(session.id))
+    existing.orders.some((o) => (o.tags || "").includes(shortSessionTag))
   ) {
     processedSessions.add(session.id);
     return;
@@ -256,7 +263,7 @@ async function createShopifyOrder(session) {
       phone: cd.phone || undefined,
       financial_status: "paid",
       currency: session.currency?.toUpperCase(),
-      tags: `${store.orderTag}, stripe, ${session.id}`,
+      tags: `${store.orderTag}, stripe, ${shortSessionTag}`,
       note: `Paid via ${store.gatewayLabel}. Stripe session: ${session.id}`,
       note_attributes: [
         { name: "stripe_session_id", value: session.id },
