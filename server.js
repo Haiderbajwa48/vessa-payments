@@ -1,6 +1,6 @@
 /**
- * Multi-store Stripe local-payments backend (MB WAY / BLIK)
- * Deploy: Railway. Front-end: Shopify cart drawer button (see /theme).
+ * Multi-store Stripe local-payments backend (MB WAY / card / wallets)
+ * Deploy: Railway. Front-end: Shopify cart drawer + product page buttons.
  */
 
 const express = require("express");
@@ -132,7 +132,10 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      payment_method_types: [store.paymentMethod],
+      // MB WAY + card. Apple Pay and Google Pay are NOT separate types —
+      // they appear automatically as express wallet buttons whenever "card"
+      // is enabled and the customer's device supports them.
+      payment_method_types: store.paymentMethods || [store.paymentMethod],
       line_items: lineItems,
       locale: store.stripeLocale,
       shipping_address_collection: {
@@ -256,12 +259,22 @@ async function createShopifyOrder(session) {
   const cd = session.customer_details || {};
   const ship = cd.address || {};
 
+  // The session can now offer MB WAY, card, Apple Pay or Google Pay, so
+  // don't hardcode MB WAY on the order. Stripe reports the method actually
+  // used in payment_method_types once the session completes (wallets like
+  // Apple/Google Pay report as "card").
+  const usedMethod =
+    (Array.isArray(session.payment_method_types) &&
+    session.payment_method_types.length === 1
+      ? session.payment_method_types[0]
+      : null) || "card";
+  const methodLabel = usedMethod === "mb_way" ? "MB WAY (Stripe)" : "Card (Stripe)";
+  const methodTag = usedMethod === "mb_way" ? "mbway" : "card";
+
   // Stripe charged product + shipping together (amount_total). The order's
   // line_items only cover the product, so without an explicit shipping_line
   // Shopify's own computed total falls short of what was actually paid —
-  // it then flags the difference as an owed refund. No tax/discounts are
-  // used in this setup, so amount_total - amount_subtotal is exactly the
-  // shipping charged.
+  // it then flags the difference as an owed refund.
   const shippingCostCents = Math.max(
     0,
     (session.amount_total || 0) - (session.amount_subtotal || 0)
@@ -278,11 +291,11 @@ async function createShopifyOrder(session) {
       phone: cd.phone || undefined,
       financial_status: "paid",
       currency: session.currency?.toUpperCase(),
-      tags: `${store.orderTag}, stripe, ${shortSessionTag}`,
-      note: `Paid via ${store.gatewayLabel}. Stripe session: ${session.id}`,
+      tags: `${methodTag}, stripe, ${shortSessionTag}`,
+      note: `Paid via ${methodLabel}. Stripe session: ${session.id}`,
       note_attributes: [
         { name: "stripe_session_id", value: session.id },
-        { name: "payment_method", value: store.gatewayLabel },
+        { name: "payment_method", value: methodLabel },
       ],
       inventory_behaviour: "decrement_obeying_policy",
       send_receipt: true,
@@ -290,7 +303,7 @@ async function createShopifyOrder(session) {
         ? {
             first_name: (cd.name || "").split(" ")[0] || "Cliente",
             last_name:
-              (cd.name || "").split(" ").slice(1).join(" ") || "MB WAY",
+              (cd.name || "").split(" ").slice(1).join(" ") || "Cliente",
             address1: ship.line1,
             address2: ship.line2 || undefined,
             city: ship.city,
@@ -304,7 +317,7 @@ async function createShopifyOrder(session) {
           kind: "sale",
           status: "success",
           amount: (session.amount_total / 100).toFixed(2),
-          gateway: store.gatewayLabel,
+          gateway: methodLabel,
         },
       ],
     },
@@ -317,7 +330,7 @@ async function createShopifyOrder(session) {
 
   processedSessions.add(session.id);
   console.log(
-    `Order created for ${storeKey} — session ${session.id}, total ${session.amount_total / 100} ${session.currency}`
+    `Order created for ${storeKey} — ${methodLabel} — session ${session.id}, total ${session.amount_total / 100} ${session.currency}`
   );
 }
 
