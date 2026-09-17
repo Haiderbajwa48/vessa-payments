@@ -1,29 +1,29 @@
 /**
  * Per-store configuration.
  *
- * Currently serving: VESSA (Portugal, MB WAY) only.
- * Domain cutover in progress: plantaris.fr -> vessa.eu (same Shopify store,
- * same myshopify.com backend domain — only the customer-facing domain changed).
+ * Currently serving: VESSA (Portugal) only.
+ * origin: canonical URL used for Stripe success/cancel redirects.
+ * testOrigins: other domains allowed through CORS during the cutover window.
  *
- * origin: the canonical URL used for Stripe success/cancel redirects.
- * testOrigins: every other domain that should still pass CORS during the
- * cutover window (www variant, apex variant, old domain, myshopify preview).
- * Trim this list down once vessa.eu is fully settled as primary.
+ * paymentMethods: Stripe payment_method_types offered in Checkout.
+ *   "mb_way" — Portuguese wallet, phone-number + app approval
+ *   "card"   — also surfaces Apple Pay / Google Pay express buttons
+ *              automatically on supported devices (no extra type needed)
  */
 
 const STORES = {
   vessa: {
-    origin: "https://www.vessa.eu", // update if Shopify's primary domain is the apex (no www) instead — check Settings -> Domains
+    origin: "https://www.vessa.eu",
     testOrigins: [
       "https://vessa.eu",
       "https://plantaris.fr",
       "https://2x4uqi-ta.myshopify.com",
     ],
-    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN, // unchanged — same store, e.g. "2x4uqi-ta.myshopify.com"
+    shopifyDomain: process.env.VESSA_SHOPIFY_DOMAIN,
     clientId: process.env.VESSA_CLIENT_ID,
     clientSecret: process.env.VESSA_CLIENT_SECRET,
     currency: "eur",
-    paymentMethod: "mb_way",
+    paymentMethods: ["mb_way", "card"],
     stripeLocale: "pt",
     gatewayLabel: "MB WAY (Stripe)",
     successPath: "/pages/sucesso",
