@@ -3,8 +3,9 @@
  *
  * paymentMethods: Stripe payment_method_types offered in Checkout.
  * maxDiscountPct: highest discount % the backend will accept from the cart.
- *   Set this to your HIGHEST real tier (e.g. 3-item discount). Anything the
- *   browser claims above this is capped — protects against tampered requests.
+ *   Set this to your HIGHEST real tier. Anything above is capped.
+ * shipping: MUST mirror Shopify's Portugal zone (Settings → Shipping):
+ *   €2.49 below €39, free from €39.
  */
 
 const STORES = {
@@ -24,7 +25,7 @@ const STORES = {
     stripeLocale: "pt",
     successPath: "/pages/sucesso",
     cancelPath: "/cart",
-    shipping: { freeAbove: 3900, flatRate: 490, label: "Envio" },
+    shipping: { freeAbove: 3900, flatRate: 249, label: "Envio" },
   },
 };
 
