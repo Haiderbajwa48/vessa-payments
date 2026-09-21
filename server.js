@@ -70,12 +70,37 @@ app.use(
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 /* ------------------------------------------------------------------ */
+/* Quantity discount — computed server-side from stores.js rules       */
+/* ------------------------------------------------------------------ */
+
+function computeQuantityDiscount(store, lines) {
+  const cfg = store.quantityDiscounts;
+  if (!cfg || !Array.isArray(cfg.tiers)) return { amount: 0, title: "" };
+
+  const excluded = String(cfg.excludeTag || "").trim().toLowerCase();
+  const eligible = lines.filter(
+    (l) => !l.tags.some((t) => t.toLowerCase() === excluded)
+  );
+
+  const eligibleQty = eligible.reduce((n, l) => n + l.qty, 0);
+  const tier = cfg.tiers.find((t) => eligibleQty >= t.minQty);
+  if (!tier) return { amount: 0, title: "" };
+
+  // Shopify allocates the % per eligible line; round per line the same way
+  const amount = eligible.reduce(
+    (sum, l) => sum + Math.round((l.unitAmount * l.qty * tier.pct) / 100),
+    0
+  );
+  return { amount, title: tier.title };
+}
+
+/* ------------------------------------------------------------------ */
 /* Create Checkout Session                                             */
 /* ------------------------------------------------------------------ */
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
-    const { store: storeKey, items, discount_cents, discount_title } = req.body;
+    const { store: storeKey, items } = req.body;
     if (!storeKey || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "Missing store or items" });
     }
@@ -85,8 +110,9 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const store = getStore(storeKey);
 
-    // --- Trusted prices from Shopify (never from the browser) ---------
+    // --- Trusted prices + tags from Shopify (never from the browser) --
     const lineItems = [];
+    const lines = [];
     let subtotal = 0;
 
     for (const item of items) {
@@ -99,6 +125,7 @@ app.post("/create-checkout-session", async (req, res) => {
       }
       const unitAmount = Math.round(parseFloat(variant.price) * 100);
       subtotal += unitAmount * qty;
+      lines.push({ unitAmount, qty, tags: variant.tags });
 
       lineItems.push({
         quantity: qty,
@@ -113,21 +140,8 @@ app.post("/create-checkout-session", async (req, res) => {
       });
     }
 
-    // --- Discount: Shopify's cart-computed amount, capped server-side --
-    // The cart engine (quantity tiers, automatic discounts, codes) already
-    // computed this. We accept it but never beyond maxDiscountPct of the
-    // TRUSTED subtotal, so a tampered request can't exceed your top tier.
-    const maxDiscount = Math.floor((subtotal * (store.maxDiscountPct || 0)) / 100);
-    let discount = Math.max(0, parseInt(discount_cents, 10) || 0);
-    if (discount > maxDiscount) {
-      console.warn(
-        `Discount ${discount} exceeds cap ${maxDiscount} (subtotal ${subtotal}) — capping`
-      );
-      discount = maxDiscount;
-    }
-    const discountTitle =
-      (String(discount_title || "").trim() || "Desconto").slice(0, 40);
-
+    // --- Discount, calculated here from the same rules as Shopify -----
+    const { amount: discount, title: discountTitle } = computeQuantityDiscount(store, lines);
     const discountedSubtotal = subtotal - discount;
 
     // Free-shipping threshold uses the post-discount subtotal (as Shopify does)
@@ -135,6 +149,12 @@ app.post("/create-checkout-session", async (req, res) => {
       discountedSubtotal >= store.shipping.freeAbove ? 0 : store.shipping.flatRate;
 
     const totalValue = ((discountedSubtotal + shippingAmount) / 100).toFixed(2);
+
+    console.log(
+      `[session] ${storeKey} items=${lines.reduce((n, l) => n + l.qty, 0)} ` +
+        `subtotal=${subtotal} discount=${discount} ("${discountTitle}") ` +
+        `shipping=${shippingAmount} total=${discountedSubtotal + shippingAmount}`
+    );
 
     const cartCompact = items
       .map((i) => `${i.variant_id}:${Math.max(1, parseInt(i.quantity, 10) || 1)}`)
@@ -151,7 +171,7 @@ app.post("/create-checkout-session", async (req, res) => {
         currency: store.currency,
         duration: "once",
         max_redemptions: 1,
-        name: discountTitle,
+        name: discountTitle.slice(0, 40),
       });
       discounts = [{ coupon: coupon.id }];
     }
@@ -187,7 +207,7 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         store: storeKey,
         cart: cartCompact,
-        discount_title: discount > 0 ? discountTitle : "",
+        discount_title: discount > 0 ? discountTitle.slice(0, 40) : "",
       },
     });
 
@@ -225,13 +245,22 @@ async function fetchVariant(store, variantId) {
     const data = await shopifyFetch(store, `/variants/${variantId}.json`);
     const v = data.variant;
     let productTitle = "";
+    let tags = [];
     try {
-      const p = await shopifyFetch(store, `/products/${v.product_id}.json?fields=title`);
+      const p = await shopifyFetch(
+        store,
+        `/products/${v.product_id}.json?fields=title,tags`
+      );
       productTitle = p.product.title;
+      tags = String(p.product.tags || "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
     } catch (_) {}
     return {
       id: v.id,
       price: v.price,
+      tags,
       displayName:
         v.title && v.title !== "Default Title"
           ? `${productTitle} — ${v.title}`
@@ -294,8 +323,7 @@ async function createShopifyOrder(session) {
   const methodLabel = usedMethod === "mb_way" ? "MB WAY (Stripe)" : "Card (Stripe)";
   const methodTag = usedMethod === "mb_way" ? "mbway" : "card";
 
-  // Use Stripe's explicit breakdown. The old (total - subtotal) formula
-  // breaks as soon as a discount exists: it goes negative and drops shipping.
+  // Stripe's explicit breakdown — correct even when a discount exists
   const td = session.total_details || {};
   const shippingCostCents =
     typeof td.amount_shipping === "number"
