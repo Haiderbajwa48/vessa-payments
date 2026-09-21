@@ -3,9 +3,10 @@
  *
  * paymentMethods: Stripe payment_method_types offered in Checkout.
  * maxDiscountPct: highest discount % the backend will accept from the cart.
- *   Set this to your HIGHEST real tier. Anything above is capped.
- * shipping: MUST mirror Shopify's Portugal zone (Settings → Shipping):
- *   €2.49 below €39, free from €39.
+ *   Matches the top Shopify tier: "Vessa — 3 unidades, -20%".
+ *   If you ever raise a tier above 20%, raise this too — otherwise the
+ *   extra discount gets capped and customers are charged more than the cart showed.
+ * shipping: mirrors Shopify's Portugal zone — €2.49 below €39, free from €39.
  */
 
 const STORES = {
@@ -21,7 +22,7 @@ const STORES = {
     clientSecret: process.env.VESSA_CLIENT_SECRET,
     currency: "eur",
     paymentMethods: ["mb_way", "card"],
-    maxDiscountPct: 25,
+    maxDiscountPct: 20,
     stripeLocale: "pt",
     successPath: "/pages/sucesso",
     cancelPath: "/cart",
