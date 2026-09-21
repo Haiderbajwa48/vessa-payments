@@ -1,14 +1,10 @@
 /**
  * Per-store configuration.
  *
- * Currently serving: VESSA (Portugal) only.
- * origin: canonical URL used for Stripe success/cancel redirects.
- * testOrigins: other domains allowed through CORS during the cutover window.
- *
  * paymentMethods: Stripe payment_method_types offered in Checkout.
- *   "mb_way" — Portuguese wallet, phone-number + app approval
- *   "card"   — also surfaces Apple Pay / Google Pay express buttons
- *              automatically on supported devices (no extra type needed)
+ * maxDiscountPct: highest discount % the backend will accept from the cart.
+ *   Set this to your HIGHEST real tier (e.g. 3-item discount). Anything the
+ *   browser claims above this is capped — protects against tampered requests.
  */
 
 const STORES = {
@@ -24,12 +20,11 @@ const STORES = {
     clientSecret: process.env.VESSA_CLIENT_SECRET,
     currency: "eur",
     paymentMethods: ["mb_way", "card"],
+    maxDiscountPct: 25,
     stripeLocale: "pt",
-    gatewayLabel: "MB WAY (Stripe)",
     successPath: "/pages/sucesso",
     cancelPath: "/cart",
-    shipping: { freeAbove: 4000, flatRate: 490, label: "Envio" },
-    orderTag: "mbway",
+    shipping: { freeAbove: 3900, flatRate: 490, label: "Envio" },
   },
 };
 
