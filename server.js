@@ -1,6 +1,6 @@
 /**
- * Multi-store Stripe local-payments backend (MB WAY / card / wallets)
- * Deploy: Railway. Front-end: Shopify cart drawer + product page buttons.
+ * Stripe local-payments backend (MB WAY / card / wallets) for Shopify.
+ * Deploy: Railway.
  */
 
 const express = require("express");
@@ -75,7 +75,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
-    const { store: storeKey, items } = req.body;
+    const { store: storeKey, items, discount_cents, discount_title } = req.body;
     if (!storeKey || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "Missing store or items" });
     }
@@ -85,6 +85,7 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const store = getStore(storeKey);
 
+    // --- Trusted prices from Shopify (never from the browser) ---------
     const lineItems = [];
     let subtotal = 0;
 
@@ -112,16 +113,47 @@ app.post("/create-checkout-session", async (req, res) => {
       });
     }
 
-    const shippingAmount =
-      subtotal >= store.shipping.freeAbove ? 0 : store.shipping.flatRate;
+    // --- Discount: Shopify's cart-computed amount, capped server-side --
+    // The cart engine (quantity tiers, automatic discounts, codes) already
+    // computed this. We accept it but never beyond maxDiscountPct of the
+    // TRUSTED subtotal, so a tampered request can't exceed your top tier.
+    const maxDiscount = Math.floor((subtotal * (store.maxDiscountPct || 0)) / 100);
+    let discount = Math.max(0, parseInt(discount_cents, 10) || 0);
+    if (discount > maxDiscount) {
+      console.warn(
+        `Discount ${discount} exceeds cap ${maxDiscount} (subtotal ${subtotal}) — capping`
+      );
+      discount = maxDiscount;
+    }
+    const discountTitle =
+      (String(discount_title || "").trim() || "Desconto").slice(0, 40);
 
-    const totalValue = ((subtotal + shippingAmount) / 100).toFixed(2);
+    const discountedSubtotal = subtotal - discount;
+
+    // Free-shipping threshold uses the post-discount subtotal (as Shopify does)
+    const shippingAmount =
+      discountedSubtotal >= store.shipping.freeAbove ? 0 : store.shipping.flatRate;
+
+    const totalValue = ((discountedSubtotal + shippingAmount) / 100).toFixed(2);
 
     const cartCompact = items
       .map((i) => `${i.variant_id}:${Math.max(1, parseInt(i.quantity, 10) || 1)}`)
       .join(",");
     if (cartCompact.length > 480) {
       return res.status(400).json({ error: "Cart too large for one session" });
+    }
+
+    // One-time Stripe coupon so checkout shows original prices + savings line
+    let discounts;
+    if (discount > 0) {
+      const coupon = await stripe.coupons.create({
+        amount_off: discount,
+        currency: store.currency,
+        duration: "once",
+        max_redemptions: 1,
+        name: discountTitle,
+      });
+      discounts = [{ coupon: coupon.id }];
     }
 
     const successUrl =
@@ -132,14 +164,12 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      // MB WAY + card. Apple Pay and Google Pay are NOT separate types —
-      // they appear automatically as express wallet buttons whenever "card"
-      // is enabled and the customer's device supports them.
-      payment_method_types: store.paymentMethods || [store.paymentMethod],
+      payment_method_types: store.paymentMethods,
       line_items: lineItems,
+      ...(discounts ? { discounts } : {}),
       locale: store.stripeLocale,
       shipping_address_collection: {
-        allowed_countries: store.currency === "pln" ? ["PL"] : ["PT", "FR", "ES"],
+        allowed_countries: ["PT", "FR", "ES"],
       },
       shipping_options: [
         {
@@ -147,9 +177,7 @@ app.post("/create-checkout-session", async (req, res) => {
             type: "fixed_amount",
             fixed_amount: { amount: shippingAmount, currency: store.currency },
             display_name:
-              shippingAmount === 0
-                ? `${store.shipping.label} — 0`
-                : store.shipping.label,
+              shippingAmount === 0 ? `${store.shipping.label} grátis` : store.shipping.label,
           },
         },
       ],
@@ -159,6 +187,7 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         store: storeKey,
         cart: cartCompact,
+        discount_title: discount > 0 ? discountTitle : "",
       },
     });
 
@@ -230,16 +259,13 @@ async function createShopifyOrder(session) {
 
   if (processedSessions.has(session.id)) return;
 
-  // Shopify order tags are capped at 40 characters EACH — a raw Stripe
-  // session id (60-70+ chars) blows that limit and Shopify rejects the
-  // whole order with "Order tags is invalid". Use a short, still
-  // effectively-unique slice for the tag; the full session id is kept
-  // in `note` and `note_attributes` below, which have no such limit.
+  // Shopify caps each order tag at 40 chars — keep the session tag short;
+  // the full session id lives in note / note_attributes.
   const shortSessionTag = "sid-" + session.id.slice(-30);
 
   const existing = await shopifyFetch(
     store,
-    `/orders.json?status=any&fields=id,tags&limit=5&name=&tag=${encodeURIComponent(
+    `/orders.json?status=any&fields=id,tags&limit=5&tag=${encodeURIComponent(
       shortSessionTag
     )}`
   ).catch(() => ({ orders: [] }));
@@ -259,10 +285,7 @@ async function createShopifyOrder(session) {
   const cd = session.customer_details || {};
   const ship = cd.address || {};
 
-  // The session can now offer MB WAY, card, Apple Pay or Google Pay, so
-  // don't hardcode MB WAY on the order. Stripe reports the method actually
-  // used in payment_method_types once the session completes (wallets like
-  // Apple/Google Pay report as "card").
+  // Method actually used (wallets report as "card")
   const usedMethod =
     (Array.isArray(session.payment_method_types) &&
     session.payment_method_types.length === 1
@@ -271,14 +294,16 @@ async function createShopifyOrder(session) {
   const methodLabel = usedMethod === "mb_way" ? "MB WAY (Stripe)" : "Card (Stripe)";
   const methodTag = usedMethod === "mb_way" ? "mbway" : "card";
 
-  // Stripe charged product + shipping together (amount_total). The order's
-  // line_items only cover the product, so without an explicit shipping_line
-  // Shopify's own computed total falls short of what was actually paid —
-  // it then flags the difference as an owed refund.
-  const shippingCostCents = Math.max(
-    0,
-    (session.amount_total || 0) - (session.amount_subtotal || 0)
-  );
+  // Use Stripe's explicit breakdown. The old (total - subtotal) formula
+  // breaks as soon as a discount exists: it goes negative and drops shipping.
+  const td = session.total_details || {};
+  const shippingCostCents =
+    typeof td.amount_shipping === "number"
+      ? td.amount_shipping
+      : Math.max(0, (session.amount_total || 0) - (session.amount_subtotal || 0));
+  const discountCents = typeof td.amount_discount === "number" ? td.amount_discount : 0;
+  const discountTitle =
+    (session.metadata?.discount_title || "Desconto").slice(0, 40) || "Desconto";
 
   const orderPayload = {
     order: {
@@ -287,6 +312,11 @@ async function createShopifyOrder(session) {
         shippingCostCents > 0
           ? [{ title: store.shipping.label, price: (shippingCostCents / 100).toFixed(2) }]
           : [],
+      // Mirror the Stripe coupon so Shopify's total equals what was paid
+      discount_codes:
+        discountCents > 0
+          ? [{ code: discountTitle, amount: (discountCents / 100).toFixed(2), type: "fixed_amount" }]
+          : undefined,
       email: cd.email || undefined,
       phone: cd.phone || undefined,
       financial_status: "paid",
@@ -302,8 +332,7 @@ async function createShopifyOrder(session) {
       shipping_address: ship.line1
         ? {
             first_name: (cd.name || "").split(" ")[0] || "Cliente",
-            last_name:
-              (cd.name || "").split(" ").slice(1).join(" ") || "Cliente",
+            last_name: (cd.name || "").split(" ").slice(1).join(" ") || "Cliente",
             address1: ship.line1,
             address2: ship.line2 || undefined,
             city: ship.city,
@@ -330,7 +359,9 @@ async function createShopifyOrder(session) {
 
   processedSessions.add(session.id);
   console.log(
-    `Order created for ${storeKey} — ${methodLabel} — session ${session.id}, total ${session.amount_total / 100} ${session.currency}`
+    `Order created for ${storeKey} — ${methodLabel} — ${session.id} — total ${
+      session.amount_total / 100
+    } ${session.currency}, discount ${discountCents / 100}, shipping ${shippingCostCents / 100}`
   );
 }
 
